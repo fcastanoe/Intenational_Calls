@@ -586,7 +586,8 @@ def scrape_eu_calls(theme_filter: str, ods_number: str, keyword: str,
 ###############################################################################
 
 def load_portal_calls(portal_name: str, scraper_func, theme_filter: str,
-                      ods_number: str, keyword: str, today: datetime.date) -> List[Dict]:
+                      ods_number: str, keyword: str, today: datetime.date,
+                      scrape_if_needed: bool = True) -> List[Dict]:
     """Load or scrape calls for a single portal and filter combination.
 
     This helper checks for a saved CSV named according to the portal,
@@ -678,9 +679,9 @@ def load_portal_calls(portal_name: str, scraper_func, theme_filter: str,
             continue
         filtered_portal.append(call)
         seen_links.add(call.get("link"))
-    # If still not enough calls, scrape new ones
+    # If still not enough calls and scraping is allowed, scrape new ones
     needed = 10 - len(filtered_portal)
-    if needed > 0:
+    if needed > 0 and scrape_if_needed:
         new_calls = scraper_func(theme_filter, ods_number, keyword, needed, today)
         for call in new_calls:
             if len(filtered_portal) >= 10:
@@ -856,7 +857,7 @@ def run_gui() -> None:
     site_menu.grid(row=3, column=1, padx=5, pady=5, sticky="we")
 
     # Row 5: Search and clear buttons
-    def on_search() -> None:
+    def search_online() -> None:
         # Clear previous results
         results_text.configure(state="normal")
         results_text.delete(1.0, tk.END)
@@ -892,19 +893,56 @@ def run_gui() -> None:
             "IDRC": scrape_idrc_calls,
         }
         if selected_site == "All":
-            # Load or scrape calls from all portals, persisting results
-            # across sessions.  This returns up to 10 calls per portal.
+            # Load or scrape calls from all portals, persisting results across
+            # sessions.  Each portal contributes up to 10 calls.  New calls
+            # are scraped if needed.  This always performs scraping when
+            # counts are below 10.
             aggregated = load_all_calls(theme_filter, ods_number, kw, today)
         else:
-            # Load or scrape calls for a single portal.  Persist the
-            # results in portal-specific and aggregated CSVs so that
-            # subsequent runs reuse the stored data.  The portal name
-            # should correspond exactly to keys in portal_scrapers.
+            # For a single portal, we want to avoid unnecessary scraping if
+            # there are already some cached calls available.  We only
+            # perform a scrape when no calls remain after applying expiry,
+            # ODS and keyword filters.  Otherwise, we reuse the cached calls
+            # and do not try to top up to ten.
             scraper_func = portal_scrapers.get(selected_site)
             if scraper_func is None:
                 aggregated = []
             else:
-                aggregated = load_portal_calls(selected_site, scraper_func, theme_filter, ods_number, kw, today)
+                # Determine slugs to load the existing cache directly
+                portal_slug = slugify(selected_site)
+                theme_slug_local = slugify(theme_filter) if theme_filter else "no_select"
+                ods_slug_local = ods_number if ods_number else "no_select"
+                cached_calls_portal = load_cache(portal_slug, theme_slug_local, ods_slug_local)
+                valid_calls = []
+                seen_links_single = set()
+                for call in cached_calls_portal:
+                    # Skip expired
+                    d = parse_date_generic(call.get("deadline_date"))
+                    if d is not None and (d - today).days < 7:
+                        continue
+                    # Skip ODS mismatches
+                    if ods_number and ods_number not in call.get("ods_list", []):
+                        continue
+                    # Skip keyword mismatches
+                    if kw:
+                        if kw not in call.get("title", "").lower() and kw not in call.get("description", "").lower():
+                            continue
+                    valid_calls.append(call)
+                    seen_links_single.add(call.get("link"))
+                    if len(valid_calls) >= 10:
+                        break
+                if valid_calls:
+                    # We have calls; reuse them without scraping more.  Sort before returning.
+                    aggregated = sorted(
+                        valid_calls,
+                        key=lambda c: (
+                            parse_date_generic(c.get("deadline_date")) or datetime.date.max,
+                            c.get("title", "")
+                        )
+                    )[:10]
+                else:
+                    # No valid calls found; perform an online scrape
+                    aggregated = load_portal_calls(selected_site, scraper_func, theme_filter, ods_number, kw, today, scrape_if_needed=True)
         # Sort aggregated by deadline date
         # Sort aggregated calls by deadline date (earliest first).  Calls with
         # unknown or unparsable deadlines are sorted last by using
@@ -970,14 +1008,131 @@ def run_gui() -> None:
         results_text.delete(1.0, tk.END)
         results_text.configure(state="disabled")
 
-    search_button = tk.Button(root, text="Search", command=on_search)
-    search_button.grid(row=4, column=0, padx=5, pady=10, sticky="we")
+    def search_csv() -> None:
+        """Display calls from existing CSVs without scraping.
+
+        This function reads cached call records from CSV files based on
+        the current site, theme and ODS filters.  It filters out
+        expired calls (deadline within seven days of today), applies
+        keyword and SDG filters, and displays the remaining calls in
+        the results area.  No scraping or cache updates are
+        performed.  If the appropriate CSV does not exist or if
+        no calls remain after filtering, the user is informed.
+        """
+        # Clear previous results
+        results_text.configure(state="normal")
+        results_text.delete(1.0, tk.END)
+        # Retrieve current filters
+        selected_theme = theme_var.get()
+        theme_filter_local = "" if selected_theme == "Select a theme" else selected_theme
+        selected_ods_local = ods_var.get()
+        ods_number_local = ""
+        if selected_ods_local and selected_ods_local != SDG_OPTIONS[0]:
+            ods_number_local = selected_ods_local.split("–")[0].strip()
+        kw_local = keyword_var.get().strip().lower()
+        selected_site_local = site_var.get()
+        today_local = datetime.date.today()
+        # Determine file slugs
+        theme_slug = slugify(theme_filter_local) if theme_filter_local else "no_select"
+        ods_slug = ods_number_local if ods_number_local else "no_select"
+        aggregated = []
+        # Determine the path to the cache file and load calls
+        if selected_site_local == "All":
+            # Aggregated 'all' file
+            cache_filename = f"cache_all_{theme_slug}_{ods_slug}.csv"
+            cache_path = os.path.join(CACHE_DIR, cache_filename)
+            if not os.path.exists(cache_path):
+                results_text.insert(tk.END, "No CSV found for these filters. Please run 'Search Online' first.\n")
+                results_text.configure(state="disabled")
+                return
+            # Load all calls and filter
+            loaded_calls = load_cache("all", theme_slug, ods_slug)
+            for call in loaded_calls:
+                # Remove expired calls (deadline within 7 days)
+                d = parse_date_generic(call.get("deadline_date"))
+                if d is not None and (d - today_local).days < 7:
+                    continue
+                # ODS filter
+                if ods_number_local and ods_number_local not in call.get("ods_list", []):
+                    continue
+                # Keyword filter
+                if kw_local:
+                    kw_low = kw_local.lower()
+                    if kw_low not in call.get("title", "").lower() and kw_low not in call.get("description", "").lower():
+                        continue
+                aggregated.append(call)
+        else:
+            # Portal-specific file
+            portal_slug_local = slugify(selected_site_local)
+            cache_filename = f"cache_{portal_slug_local}_{theme_slug}_{ods_slug}.csv"
+            cache_path = os.path.join(CACHE_DIR, cache_filename)
+            if not os.path.exists(cache_path):
+                results_text.insert(tk.END, "No CSV found for these filters. Please run 'Search Online' first.\n")
+                results_text.configure(state="disabled")
+                return
+            loaded_calls = load_cache(portal_slug_local, theme_slug, ods_slug)
+            for call in loaded_calls:
+                d = parse_date_generic(call.get("deadline_date"))
+                if d is not None and (d - today_local).days < 7:
+                    continue
+                if ods_number_local and ods_number_local not in call.get("ods_list", []):
+                    continue
+                if kw_local:
+                    kw_low = kw_local.lower()
+                    if kw_low not in call.get("title", "").lower() and kw_low not in call.get("description", "").lower():
+                        continue
+                aggregated.append(call)
+        # If no calls remain, inform the user
+        if not aggregated:
+            results_text.insert(tk.END, "No calls match these filters in the existing CSV. Please run 'Search Online' to update.\n")
+            results_text.configure(state="disabled")
+            return
+        # Sort calls by deadline date (earliest first), unknown dates last
+        aggregated_sorted = sorted(
+            aggregated,
+            key=lambda c: (
+                parse_date_generic(c.get("deadline_date")) or datetime.date.max,
+                c.get("title", "")
+            )
+        )
+        # Display results without updating CSV caches
+        for i, call in enumerate(aggregated_sorted, 1):
+            results_text.insert(tk.END, f"{i}. {call['title']}\n")
+            # Clickable link
+            start_idx = results_text.index(tk.END)
+            link_txt = f"   Link: {call['link']}\n"
+            results_text.insert(tk.END, link_txt)
+            tag_name = f"link_csv_{i}"
+            results_text.tag_add(tag_name, f"{start_idx} linestart", f"{start_idx} lineend")
+            results_text.tag_bind(tag_name, "<Button-1>", lambda e, url=call['link']: webbrowser.open_new_tab(url))
+            results_text.tag_config(tag_name, foreground="blue", underline=True)
+            results_text.insert(tk.END, f"   Opening date: {call['opening_date']} | Deadline: {call['deadline_date']}\n")
+            results_text.insert(tk.END, f"   Site: {call['site']}\n")
+            results_text.insert(tk.END, "   Summary: " + call['description'] + "\n")
+            ods_str = ", ".join(call.get("ods_list", []))
+            results_text.insert(tk.END, f"   ODS: {ods_str}\n\n")
+        results_text.insert(tk.END, f"Displayed {len(aggregated_sorted)} call(s) from CSV.\n")
+        results_text.configure(state="disabled")
+
+    # Clear button is placed where the search button used to be (row 4, column 0).
     clear_button = tk.Button(root, text="Clear", command=on_clear)
-    clear_button.grid(row=4, column=1, padx=5, pady=10, sticky="we")
+    clear_button.grid(row=4, column=0, padx=5, pady=10, sticky="we")
+    # Search Online button invokes the live scraping routine.  It uses the
+    # same logic as the former search button but always performs
+    # scraping and updates caches.  It resides in column 1.
+    search_online_button = tk.Button(root, text="Search Online", command=search_online)
+    search_online_button.grid(row=4, column=1, padx=5, pady=10, sticky="we")
+    # Search CSV button reads existing CSVs without performing any
+    # scraping.  It displays calls stored in the caches after
+    # removing expired entries and applying filters.  It resides in
+    # column 2.
+    search_csv_button = tk.Button(root, text="Search CSV", command=search_csv)
+    search_csv_button.grid(row=4, column=2, padx=5, pady=10, sticky="we")
 
     # Row 5: Results area
     results_text = scrolledtext.ScrolledText(root, wrap=tk.WORD, width=120, height=25)
-    results_text.grid(row=5, column=0, columnspan=2, padx=5, pady=5, sticky="nsew")
+    # Span across three columns to align with the buttons above
+    results_text.grid(row=5, column=0, columnspan=3, padx=5, pady=5, sticky="nsew")
     results_text.configure(state="disabled")
 
     # Row 6: Info label
@@ -991,11 +1146,17 @@ def run_gui() -> None:
         wraplength=900,
         justify="left",
     )
-    info_label.grid(row=6, column=0, columnspan=2, padx=5, pady=5, sticky="w")
+    # Span across three columns to align with the results area
+    info_label.grid(row=6, column=0, columnspan=3, padx=5, pady=5, sticky="w")
 
-    # Configure row/column weights so that the results area (row 5) expands
+    # Configure row/column weights so that the results area (row 5) expands and
+    # the search buttons stretch to fill available space.  Column 0 (clear button)
+    # does not expand; columns 1 and 2 (search buttons) expand equally.  The
+    # results area (row 5) expands vertically with the window.
     root.grid_rowconfigure(5, weight=1)
+    root.grid_columnconfigure(0, weight=0)
     root.grid_columnconfigure(1, weight=1)
+    root.grid_columnconfigure(2, weight=1)
 
     root.mainloop()
 

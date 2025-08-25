@@ -38,8 +38,6 @@ except Exception:
 PlaintextParser = None  # type: ignore
 Tokenizer = None  # type: ignore
 LsaSummarizer = None  # type: ignore
-_HAS_SUMY = False
-
 
 def summarize_text(text: str, word_limit: int = 100) -> str:
     """Return a concise summary of ``text``.
