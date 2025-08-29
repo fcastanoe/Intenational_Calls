@@ -1,14 +1,11 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """
 utils.py
 --------
 
 This module provides utility functions for configuring Selenium WebDriver
-instances and handling common actions like accepting cookie banners.  All
-scrapers import these functions so that browser configuration remains
-consistent across the project.
+instances and handling common actions like accepting cookie banners.
+All scrapers import these functions so that browser configuration
+remains consistent across the project.
 
 Functions
 ~~~~~~~~~
@@ -19,13 +16,20 @@ create_driver() -> selenium.webdriver.Chrome
 accept_cookies(driver) -> None
     Attempt to click the standard OneTrust cookie banner if present.
 
+slugify(value) -> str
+    Normalise a string into a filesystem‑friendly slug.  This helper
+    converts the string to lowercase, replaces spaces with underscores
+    and removes characters that are not alphanumeric or underscores.
 """
+
+from __future__ import annotations
 
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+
 
 def create_driver() -> webdriver.Chrome:
     """Create a new headless Chrome WebDriver.
@@ -72,4 +76,25 @@ def accept_cookies(driver: webdriver.Chrome) -> None:
         pass
 
 
-__all__ = ["create_driver", "accept_cookies"]
+def slugify(value: str) -> str:
+    """Normalise a string into a filesystem‑friendly slug.
+
+    Lowercases the input, replaces spaces with underscores and
+    removes any characters that are not alphanumeric or underscores.
+
+    Parameters
+    ----------
+    value : str
+        The raw string to slugify.
+
+    Returns
+    -------
+    str
+        A slugified version of the input.
+    """
+    import re
+    value = value.lower().replace(" ", "_")
+    return re.sub(r"[^a-z0-9_]+", "", value)
+
+
+__all__ = ["create_driver", "accept_cookies", "slugify"]

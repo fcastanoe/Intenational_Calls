@@ -1,9 +1,9 @@
-Min ciencias
-Min justicia
-Min ambiente
-Min cultura
-Min tic
-Min Educacion
+Min ciencias 
+Min ambiente 
+Min cultura: Mirar todo el scrapping
+Min tic 
+Min Educacion: Mirar descripcion y fecha
+Min Energia: Mirar Fecha de cierre. 
 
 
 Ragalias - Importantes.

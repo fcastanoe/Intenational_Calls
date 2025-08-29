@@ -1,133 +1,108 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 """
 summarizer.py
----------------
+===============
 
-This module provides local summarisation and Sustainable Development Goal (SDG)
-classification utilities.  It attempts to use external libraries like
-gensim or sumy for better summaries when available, but falls back to a
-simple word-slicing method when these packages are not installed.  The
-classification function maps a summary to one or more SDG numbers based on
-keyword matches.
+This module provides simple text summarisation and ODS (Objetivos de
+Desarrollo Sostenible) classification functions used by both the
+international and national scrapers.  Due to limited library
+availability in the execution environment, the summarisation falls
+back to a naive approach of truncating to the first ``word_limit``
+words when more sophisticated methods such as Gensim are not
+available.
 
-Functions
-~~~~~~~~~
-summarize_text(text: str, word_limit: int = 100) -> str
-    Produce a concise summary of the input text.  Uses gensim or sumy
-    when available, otherwise returns the first ``word_limit`` words.
-
-classify_ods(summary: str) -> list[str]
-    Classify a summary into zero or more SDG numbers (as strings) using
-    keyword matching.  Returns ``['unknown']`` if no SDG can be identified.
-
+The ODS classifier is a keyword‑based mapper.  It scans the summary
+for tokens associated with each of the 17 SDGs and returns a list of
+matching goal numbers.  If no keywords are found the classifier
+returns ``['unknown']``.
 """
 
 from __future__ import annotations
 
-try:
-    # Try gensim for TextRank-based summarisation
-    from gensim.summarization import summarize as gensim_summarize  # type: ignore
-    _HAS_GENSIM = True
-except Exception:
-    gensim_summarize = None  # type: ignore
-    _HAS_GENSIM = False
+from typing import List
 
-# We intentionally avoid using the sumy library for summarisation.
-PlaintextParser = None  # type: ignore
-Tokenizer = None  # type: ignore
-LsaSummarizer = None  # type: ignore
 
 def summarize_text(text: str, word_limit: int = 100) -> str:
-    """Return a concise summary of ``text``.
+    """Produce a concise summary of ``text``.
 
-    This function attempts to use gensim's TextRank implementation first.
-    If gensim is unavailable or fails, it falls back to sumy's LSA
-    summariser.  If that also fails, it returns the first ``word_limit``
-    words of the input as a simple summary.
+    If third‑party summarisation libraries are unavailable this
+    function truncates the input to the first ``word_limit`` words.
 
     Parameters
     ----------
-    text : str
-        The input text to summarise.
-    word_limit : int, optional
-        Maximum number of words in the summary when no external
-        summariser is available (default is 100).
+    text: str
+        The original text to summarise.
+    word_limit: int, optional
+        The maximum number of words to include in the summary.
 
     Returns
     -------
     str
-        A concise summary of the input text.
-
+        A summary of the input text.  If the input is empty an empty
+        string is returned.  If the original text contains more than
+        ``word_limit`` words an ellipsis is appended to indicate
+        truncation.
     """
     if not text:
         return ""
-    # Use gensim if installed
-    if _HAS_GENSIM and gensim_summarize is not None:
-        try:
-            summary = gensim_summarize(text, word_count=word_limit)
-            if summary:
-                return summary.strip()
-        except Exception:
-            pass
-    # Fallback: take first ``word_limit`` words
-    tokens = text.split()
-    if len(tokens) <= word_limit:
+    words = text.split()
+    if len(words) <= word_limit:
         return text.strip()
-    return " ".join(tokens[:word_limit]).strip() + " …"
+    return " ".join(words[:word_limit]) + "..."
 
 
-def classify_ods(summary: str) -> list[str]:
-    """Classify a summary into one or more SDG numbers.
+# Simple Spanish keyword lists for each SDG.  These lists are not
+# exhaustive but provide a basic mapping between common topics and
+# SDG numbers.  Additional terms can be added as needed to refine
+# classification.  The keys correspond to SDG numbers represented as
+# strings.
+_SDG_KEYWORDS = {
+    "1": ["pobreza", "pobres", "desigualdad"],
+    "2": ["hambre", "alimentación", "agricultura"],
+    "3": ["salud", "bienestar", "enfermedad"],
+    "4": ["educación", "escuela", "universidad"],
+    "5": ["igualdad de género", "mujer", "género"],
+    "6": ["agua", "saneamiento", "hidráulica"],
+    "7": ["energía", "renovable", "electrificación"],
+    "8": ["trabajo", "empleo", "economía"],
+    "9": ["industria", "innovación", "infraestructura", "tecnología"],
+    "10": ["desigualdad", "inclusión", "migración"],
+    "11": ["ciudades", "comunidades", "urbanismo"],
+    "12": ["consumo", "producción", "residuos"],
+    "13": ["clima", "cambio climático", "carbono"],
+    "14": ["océano", "mar", "pesca"],
+    "15": ["ecosistema", "bosque", "biodiversidad"],
+    "16": ["paz", "justicia", "instituciones"],
+    "17": ["alianzas", "cooperación", "financiación"]
+}
 
-    This function lowers the summary and searches for keywords associated
-    with each SDG.  Keywords are defined in English and can be extended
-    as needed.  If no keyword is found for any SDG, ``['unknown']`` is
-    returned.
+
+def classify_ods(summary: str) -> List[str]:
+    """Classify a summary into one or more Sustainable Development Goals.
+
+    The function searches for Spanish keywords associated with each
+    SDG.  If at least one keyword is found the corresponding goal
+    number is added to the result list.  If no keywords are found
+    ``['unknown']`` is returned.
 
     Parameters
     ----------
-    summary : str
-        The summary to classify.
+    summary: str
+        A concise description of the project or call.
 
     Returns
     -------
     list[str]
-        A list of SDG numbers (strings).  If no SDG matches, returns
-        ``['unknown']``.
+        A list of SDG numbers.  Returns ['unknown'] when no keywords
+        are matched.
     """
     if not summary:
         return ["unknown"]
-    text = summary.lower()
-    ods_keywords = {
-        "1": ["poverty", "poor", "income", "social protection", "financial", "eradicate poverty"],
-        "2": ["hunger", "food", "nutrition", "agriculture", "farmers", "food security", "malnutrition"],
-        "3": ["health", "well-being", "disease", "medical", "medicine", "healthcare", "infection", "mental"],
-        "4": ["education", "learning", "school", "literacy", "training", "academic", "skills"],
-        "5": ["gender", "women", "girls", "equality", "empower", "discrimination", "violence against women"],
-        "6": ["water", "sanitation", "clean water", "wastewater", "hygiene", "drinking water"],
-        "7": ["energy", "renewable", "clean energy", "electricity", "power", "affordable energy"],
-        "8": ["employment", "jobs", "work", "economic growth", "productivity", "labor", "business", "entrepreneurship"],
-        "9": ["industry", "innovation", "infrastructure", "technology", "engineering", "development", "transport", "communication", "manufacturing"],
-        "10": ["inequality", "marginalized", "equal opportunity", "income disparity", "discrimination", "disabled"],
-        "11": ["urban", "city", "community", "housing", "transport", "infrastructure", "public space", "resilience", "urbanization"],
-        "12": ["consumption", "production", "sustainable", "recycling", "waste", "supply chain", "resource efficiency"],
-        "13": ["climate", "global warming", "greenhouse", "carbon", "emissions", "resilience", "climate change", "mitigation", "adaptation"],
-        "14": ["oceans", "sea", "marine", "fish", "aquatic", "marine biodiversity", "overfishing", "coral"],
-        "15": ["forests", "land", "biodiversity", "ecosystems", "flora", "fauna", "wildlife", "conservation", "soil", "deforestation", "desertification"],
-        "16": ["peace", "justice", "institutions", "rule of law", "human rights", "transparency", "corruption", "violence", "democracy"],
-        "17": ["partnership", "cooperation", "international", "finance", "capacity-building", "technology transfer", "policy", "global", "collaboration", "alliances"],
-    }
+    summary_lower = summary.lower()
     matched = []
-    for num, keys in ods_keywords.items():
-        for kw in keys:
-            if kw in text:
-                matched.append(num)
-                break
-    if not matched:
-        return ["unknown"]
-    return sorted(set(matched), key=lambda x: int(x))
+    for goal, keywords in _SDG_KEYWORDS.items():
+        if any(k in summary_lower for k in keywords):
+            matched.append(goal)
+    return matched if matched else ["unknown"]
 
 
 __all__ = ["summarize_text", "classify_ods"]
